@@ -3,6 +3,7 @@ import expressAsyncHandler from 'express-async-handler';
 import Product from '../models/productModel.js';
 import { isAuth, isAdmin, optionalAuth } from '../utils.js';
 import { shapeProduct } from '../pricing.js';
+import { asText, escapeRegex } from '../validators.js';
 
 const productRouter = express.Router();
 
@@ -22,11 +23,15 @@ const productRouter = express.Router();
 // يجيب كل المنتجات
 // 🏭 optionalAuth: التاجر المعتمد والأدمن بس بيشوفوا حقول الجملة (wholesalePrice وغيرها)،
 //    الباقي بيشوف المنتج بسعر القطاعي وعلامة hasWholesale بس.
-productRouter.get('/', optionalAuth, async (req, res) => {
-  // ⚡ من غير التقييمات (reviews) ومع lean(): الرد أصغر وأسرع في الصفحة الرئيسية
-  const products = await Product.find().select('-reviews').lean();
-  res.send(products.map((p) => shapeProduct(p, req.user)));
-});
+productRouter.get(
+  '/',
+  optionalAuth,
+  expressAsyncHandler(async (req, res) => {
+    // ⚡ من غير التقييمات (reviews) ومع lean(): الرد أصغر وأسرع في الصفحة الرئيسية
+    const products = await Product.find().select('-reviews').lean();
+    res.send(products.map((p) => shapeProduct(p, req.user)));
+  })
+);
 
 productRouter.post(
   '/',
@@ -111,19 +116,34 @@ productRouter.post(
   '/:id/reviews',
   isAuth,
   expressAsyncHandler(async (req, res) => {
+    // ⭐ التقييم رقم صحيح من 1 لـ 5 بس
+    const rating = Number(req.body.rating);
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).send({ message: 'التقييم لازم يكون من 1 لـ 5' });
+    }
+    const comment = asText(req.body.comment);
+    if (!comment) {
+      return res.status(400).send({ message: 'اكتب تعليقًا من فضلك' });
+    }
+    if (comment.length > 1000) {
+      return res.status(400).send({ message: 'التعليق طويل جدًا (الحد الأقصى 1000 حرف)' });
+    }
+
     const productId = req.params.id;
     const product = await Product.findById(productId);
     if (product) {
-      if (product.reviews.find((x) => x.name === req.user.name)) {
+      // منع التكرار بحساب المستخدم (مش بالاسم، لأن أكتر من عميل ممكن يشاركوا نفس الاسم)
+      if (product.reviews.find((x) => x.user && String(x.user) === String(req.user._id))) {
         return res
           .status(400)
           .send({ message: 'لقد قيّمت هذا المنتج من قبل' });
       }
 
       const review = {
+        user: req.user._id,
         name: req.user.name,
-        rating: Number(req.body.rating),
-        comment: req.body.comment,
+        rating,
+        comment,
       };
       product.reviews.push(review);
       product.numReviews = product.reviews.length;
@@ -143,7 +163,17 @@ productRouter.post(
   })
 );
 
-const PAGE_SIZE = 3;
+// 📄 حجم الصفحة الافتراضي (كان 3). الحد الأقصى بيمنع طلب آلاف المنتجات في استعلام واحد
+const PAGE_SIZE = 12;
+const MAX_PAGE_SIZE = 60;
+const pagination = (query) => {
+  const pageSize = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, Math.floor(Number(query.pageSize)) || PAGE_SIZE)
+  );
+  const page = Math.max(1, Math.floor(Number(query.page)) || 1);
+  return { pageSize, page };
+};
 
 productRouter.get(
   '/admin',
@@ -151,8 +181,7 @@ productRouter.get(
   isAdmin,
   expressAsyncHandler(async (req, res) => {
     const { query } = req;
-    const page = query.page || 1;
-    const pageSize = query.pageSize || PAGE_SIZE;
+    const { page, pageSize } = pagination(query);
 
     const products = await Product.find()
       .skip(pageSize * (page - 1))
@@ -172,40 +201,38 @@ productRouter.get(
   optionalAuth,
   expressAsyncHandler(async (req, res) => {
     const { query } = req;
-    const pageSize = query.pageSize || PAGE_SIZE;
-    const page = query.page || 1;
-    const category = query.category || '';
-    const price = query.price || '';
-    const rating = query.rating || '';
-    const order = query.order || '';
-    const searchQuery = query.query || '';
+    const { page, pageSize } = pagination(query);
+    // كل المدخلات بتتحوّل لنص (مفيش object يتحقن في الاستعلام)
+    const category = asText(query.category);
+    const price = asText(query.price);
+    const rating = asText(query.rating);
+    const order = asText(query.order);
+    const searchQuery = asText(query.query).slice(0, 100);
 
     const queryFilter =
       searchQuery && searchQuery !== 'all'
         ? {
             name: {
-              $regex: searchQuery,
+              $regex: escapeRegex(searchQuery), // 🧼 كلام العميل بيتنضّف قبل الـ regex
               $options: 'i',
             },
           }
         : {};
     const categoryFilter = category && category !== 'all' ? { category } : {};
     const ratingFilter =
-      rating && rating !== 'all'
+      rating && rating !== 'all' && Number.isFinite(Number(rating))
         ? {
             rating: {
               $gte: Number(rating),
             },
           }
         : {};
+    const [priceMin, priceMax] = price.split('-').map(Number);
     const priceFilter =
-      price && price !== 'all'
+      price && price !== 'all' && Number.isFinite(priceMin) && Number.isFinite(priceMax)
         ? {
             // 1-50
-            price: {
-              $gte: Number(price.split('-')[0]),
-              $lte: Number(price.split('-')[1]),
-            },
+            price: { $gte: priceMin, $lte: priceMax },
           }
         : {};
     const sortOrder =
@@ -254,21 +281,29 @@ productRouter.get(
   })
 );
 
-productRouter.get('/slug/:slug', optionalAuth, async (req, res) => {
-  const product = await Product.findOne({ slug: req.params.slug });
-  if (product) {
-    res.send(shapeProduct(product, req.user));
-  } else {
-    res.status(404).send({ message: 'المنتج غير موجود' });
-  }
-});
-productRouter.get('/:id', optionalAuth, async (req, res) => {
-  const product = await Product.findById(req.params.id);
-  if (product) {
-    res.send(shapeProduct(product, req.user));
-  } else {
-    res.status(404).send({ message: 'المنتج غير موجود' });
-  }
-});
+productRouter.get(
+  '/slug/:slug',
+  optionalAuth,
+  expressAsyncHandler(async (req, res) => {
+    const product = await Product.findOne({ slug: asText(req.params.slug) });
+    if (product) {
+      res.send(shapeProduct(product, req.user));
+    } else {
+      res.status(404).send({ message: 'المنتج غير موجود' });
+    }
+  })
+);
+productRouter.get(
+  '/:id',
+  optionalAuth,
+  expressAsyncHandler(async (req, res) => {
+    const product = await Product.findById(req.params.id);
+    if (product) {
+      res.send(shapeProduct(product, req.user));
+    } else {
+      res.status(404).send({ message: 'المنتج غير موجود' });
+    }
+  })
+);
 
 export default productRouter;

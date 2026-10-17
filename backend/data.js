@@ -1,29 +1,39 @@
 import './env.js';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+
+// 🔐 مفيش باسورد ثابت معروف (123456 اتلغى). الحسابات التجريبية بتاخد باسورد عشوائي جديد
+//    كل مرة بيتحمّل فيها الـ seed، وبيتطبع في الـ console (للتطوير بس).
+//    الأدمن بياخد باسورده من ADMIN_PASSWORD في backend/.env لو متحط.
+const randomPassword = () => crypto.randomBytes(9).toString('base64url');
+export const devPasswords = {
+  admin: process.env.ADMIN_PASSWORD || randomPassword(),
+  user: randomPassword(),
+  wholesale: randomPassword(),
+};
 
 const data = {
   // 👤 المستخدمين: الأدمن بياخد إيميله وباسورده من backend/.env (ADMIN_EMAIL / ADMIN_PASSWORD).
-  // لو مش متحطين بيرجع للقيم التجريبية — ⚠️ غيّرهم قبل أي تسليم للعميل.
   users: [
     {
       name: 'الأدمن',
       email: process.env.ADMIN_EMAIL || 'admin@example.com',
-      password: bcrypt.hashSync(process.env.ADMIN_PASSWORD || '123456'),
+      password: bcrypt.hashSync(devPasswords.admin),
       isAdmin: true,
       role: 'admin',
     },
     {
       name: 'عميل تجريبي',
       email: 'user@example.com',
-      password: bcrypt.hashSync('123456'),
+      password: bcrypt.hashSync(devPasswords.user),
       isAdmin: false,
       role: 'user',
     },
-    // 🏭 حساب تاجر معتمد تجريبي: wholesale@example.com / 123456
+    // 🏭 حساب تاجر معتمد تجريبي: wholesale@example.com (الباسورد بيتطبع في الـ console وقت التشغيل)
     {
       name: 'تاجر تجريبي',
       email: 'wholesale@example.com',
-      password: bcrypt.hashSync('123456'),
+      password: bcrypt.hashSync(devPasswords.wholesale),
       isAdmin: false,
       role: 'wholesale',
       businessName: 'محلات النور للملابس',

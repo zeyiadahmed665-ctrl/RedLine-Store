@@ -3,7 +3,8 @@ import expressAsyncHandler from 'express-async-handler';
 import Order from '../models/orderModel.js';
 import User from '../models/userModel.js';
 import Product from '../models/productModel.js';
-import { isAuth, isAdmin, sendMail, payOrderEmailTemplate } from '../utils.js';
+import { isAuth, isAdmin, sendMail, payOrderEmailTemplate, mailAddress } from '../utils.js';
+import { asText } from '../validators.js';
 import { paysWholesale, minQtyFor, unitPriceFor, round2 } from '../pricing.js';
 import {
   TAX_RATE,
@@ -15,6 +16,56 @@ import {
 } from '../config.js';
 
 const orderRouter = express.Router();
+
+// 📦 المخزون: خصم ذرّي (مشروط بوجود كمية كفاية) عشان طلبين في نفس اللحظة ميبيعوش آخر قطعة مرتين
+const deductStock = async (orderItems) => {
+  const done = [];
+  for (const it of orderItems) {
+    const r = await Product.updateOne(
+      { _id: it.product, countInStock: { $gte: it.quantity } },
+      { $inc: { countInStock: -it.quantity } }
+    );
+    if (r.modifiedCount !== 1) {
+      await restoreStock(done); // رجّع اللي اتخصم قبل كده
+      return it;
+    }
+    done.push(it);
+  }
+  return null; // null = نجح
+};
+const restoreStock = async (orderItems) => {
+  for (const it of orderItems) {
+    await Product.updateOne({ _id: it.product }, { $inc: { countInStock: it.quantity } });
+  }
+};
+
+// 🏠 عنوان الشحن: بناخد الحقول المعروفة بس. الرمز البريدي والدولة اختياريين (الدولة مصر افتراضيًا)
+const cleanShippingAddress = (raw) => {
+  const a = raw && typeof raw === 'object' ? raw : {};
+  const fullName = asText(a.fullName).slice(0, 100);
+  const address = asText(a.address).slice(0, 300);
+  const city = asText(a.city).slice(0, 100);
+  if (!fullName || !address || !city) return null;
+  const out = {
+    fullName,
+    address,
+    city,
+    postalCode: asText(a.postalCode).slice(0, 20),
+    country: asText(a.country).slice(0, 60) || 'مصر',
+  };
+  if (a.location && typeof a.location === 'object') {
+    const { lat, lng } = a.location;
+    out.location = {
+      lat: Number.isFinite(Number(lat)) ? Number(lat) : undefined,
+      lng: Number.isFinite(Number(lng)) ? Number(lng) : undefined,
+      address: asText(a.location.address).slice(0, 300),
+      name: asText(a.location.name).slice(0, 200),
+      vicinity: asText(a.location.vicinity).slice(0, 300),
+      googleAddressId: asText(a.location.googleAddressId).slice(0, 200),
+    };
+  }
+  return out;
+};
 
 orderRouter.get(
   '/',
@@ -35,6 +86,14 @@ orderRouter.post(
     const items = Array.isArray(req.body.orderItems) ? req.body.orderItems : [];
     if (items.length === 0) {
       return res.status(400).send({ message: 'السلة فارغة' });
+    }
+    const shippingAddress = cleanShippingAddress(req.body.shippingAddress);
+    if (!shippingAddress) {
+      return res.status(400).send({ message: 'من فضلك اكتب الاسم والعنوان والمدينة' });
+    }
+    const paymentMethod = asText(req.body.paymentMethod);
+    if (!paymentMethod) {
+      return res.status(400).send({ message: 'اختر طريقة الدفع' });
     }
     // الدور الحقيقي من القاعدة مش من التوكن (ممكن يكون اتغيّر بعد تسجيل الدخول)
     const buyer = await User.findById(req.user._id).select('role isAdmin');
@@ -79,6 +138,17 @@ orderRouter.post(
     const taxPrice = round2(TAX_RATE * itemsPrice);
     const totalPrice = round2(itemsPrice + shippingPrice + taxPrice);
 
+<<<<<<< HEAD
+=======
+    // 📦 خصم المخزون بشكل آمن (لو قطعة خلصت في اللحظة دي بنرفض الطلب كله)
+    const outOfStock = await deductStock(orderItems);
+    if (outOfStock) {
+      return res.status(400).send({
+        message: `الكمية المطلوبة من "${outOfStock.name}" لم تعد متاحة`,
+      });
+    }
+
+>>>>>>> b00f57d (describe the changes)
     // 🎁 استبدال النقاط (قطاعي فقط) — بنخصم الرصيد بشكل ذرّي عشان محدش يصرف نفس النقاط مرتين
     let pointsUsed = 0;
     let pointsDiscount = 0;
@@ -92,6 +162,10 @@ orderRouter.post(
           { $inc: { loyaltyPoints: -wanted } }
         );
         if (!deducted) {
+<<<<<<< HEAD
+=======
+          await restoreStock(orderItems);
+>>>>>>> b00f57d (describe the changes)
           return res.status(400).send({ message: 'رصيد النقاط غير كافي' });
         }
         pointsUsed = wanted;
@@ -105,8 +179,14 @@ orderRouter.post(
       orderType: paysWholesale(buyer) ? 'wholesale' : 'retail',
       pointsUsed,
       pointsDiscount,
+<<<<<<< HEAD
       shippingAddress: req.body.shippingAddress,
       paymentMethod: req.body.paymentMethod,
+=======
+      shippingAddress,
+      paymentMethod,
+      stockDeducted: true,
+>>>>>>> b00f57d (describe the changes)
       itemsPrice,
       shippingPrice,
       taxPrice,
@@ -118,7 +198,12 @@ orderRouter.post(
     try {
       order = await newOrder.save();
     } catch (e) {
+<<<<<<< HEAD
       // لو الحفظ فشل نرجّع النقاط اللي اتخصمت
+=======
+      // لو الحفظ فشل نرجّع المخزون والنقاط اللي اتخصمت
+      await restoreStock(orderItems);
+>>>>>>> b00f57d (describe the changes)
       if (pointsUsed > 0) await User.updateOne({ _id: req.user._id }, { $inc: { loyaltyPoints: pointsUsed } });
       throw e;
     }
@@ -291,7 +376,7 @@ orderRouter.put(
 
       const updatedOrder = await order.save();
       sendMail({
-        to: `${order.user.name} <${order.user.email}>`,
+        to: mailAddress(order.user.name, order.user.email),
         subject: `طلب جديد رقم ${order._id}`,
         html: payOrderEmailTemplate(order),
       });
@@ -303,18 +388,25 @@ orderRouter.put(
   })
 );
 
+// 🗑️ مسح طلب. لو الطلب لسه ما اتسلّمش بنعتبره إلغاء: بنرجّع المخزون والنقاط اللي العميل استخدمها.
+// (الطلب المسلَّم بيتمسح كسجل بس، من غير ما نرجّع حاجة)
 orderRouter.delete(
   '/:id',
   isAuth,
   isAdmin,
   expressAsyncHandler(async (req, res) => {
-    const order = await Order.findById(req.params.id);
-    if (order) {
-      await order.remove();
-      res.send({ message: 'تم حذف الطلب' });
-    } else {
-      res.status(404).send({ message: 'الطلب غير موجود' });
+    // الحذف ذرّي: اللي بيمسح الطلب هو الوحيد اللي بيرجّع المخزون (مفيش رجوع مرتين)
+    const order = await Order.findByIdAndDelete(req.params.id);
+    if (!order) return res.status(404).send({ message: 'الطلب غير موجود' });
+
+    if (!order.isDelivered) {
+      // الطلبات القديمة (قبل التعديل ده) المخزون ماكانش بيتخصم منها، فمنرجّعش حاجة ليها
+      if (order.stockDeducted) await restoreStock(order.orderItems);
+      if (order.pointsUsed > 0) {
+        await User.updateOne({ _id: order.user }, { $inc: { loyaltyPoints: order.pointsUsed } });
+      }
     }
+    res.send({ message: 'تم حذف الطلب' });
   })
 );
 

@@ -7,6 +7,8 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+import helmet from "helmet";
+import bcrypt from "bcryptjs";
 import seedRouter from "./routes/seedRoutes.js";
 import productRouter from "./routes/productRoutes.js";
 import userRouter from "./routes/userRoutes.js";
@@ -46,7 +48,8 @@ async function connectDb() {
   if (useMemory) {
     const Product = (await import("./models/productModel.js")).default;
     const User = (await import("./models/userModel.js")).default;
-    const data = (await import("./data.js")).default;
+    const dataModule = await import("./data.js");
+    const data = dataModule.default;
 
     await Promise.all([
       Product.insertMany(data.products),
@@ -54,18 +57,69 @@ async function connectDb() {
     ]);
 
     console.log("Sample products and users loaded");
+    // 🔐 الباسوردات التجريبية عشوائية (مفيش 123456) — بتتطبع هنا للتطوير بس
+    console.log("Dev accounts (temporary passwords):");
+    data.users.forEach((u) =>
+      console.log(`  ${u.email}  /  ${dataModule.devPasswords[u.role] || "(see ADMIN_PASSWORD)"}`)
+    );
+  } else {
+    await ensureAdmin();
   }
+}
+
+// 👑 لو القاعدة الحقيقية مفيهاش أدمن خالص: بنعمل واحد من ADMIN_EMAIL / ADMIN_PASSWORD
+//    (لأن الـ seed ممنوع في production، ده الطريق الوحيد للأدمن الأول)
+async function ensureAdmin() {
+  const User = (await import("./models/userModel.js")).default;
+  const hasAdmin = await User.exists({ $or: [{ role: "admin" }, { isAdmin: true }] });
+  if (hasAdmin) return;
+  const email = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+  const password = process.env.ADMIN_PASSWORD || "";
+  if (!email || password.length < 8) {
+    console.warn(
+      "WARNING: no admin user exists. Set ADMIN_EMAIL and ADMIN_PASSWORD (8+ chars) and restart to create one."
+    );
+    return;
+  }
+  await User.create({
+    name: "الأدمن",
+    email,
+    password: bcrypt.hashSync(password),
+    isAdmin: true,
+    role: "admin",
+  });
+  console.log("Admin account created for", email);
 }
 
 connectDb().catch((err) => {
   console.error("DB error:", err.message);
+  // في production مينفعش السيرفر يفضل شغّال من غير قاعدة بيانات: بنوقفه عشان المنصة تعيد تشغيله/تنبّهك
+  if (process.env.NODE_ENV === "production") {
+    process.exit(1);
+  }
 });
 
 if (!process.env.JWT_SECRET) {
   console.log("WARNING: JWT_SECRET is not set, login will not work");
+  if (process.env.NODE_ENV === "production") {
+    process.exit(1);
+  }
 }
 
 const app = express();
+
+// Koyeb/Vercel بيشغّلوا السيرفر ورا proxy: لازم عشان الـ rate limit يشوف الـ IP الحقيقي
+app.set("trust proxy", 1);
+
+// 🛡️ هيدرز الأمان. الـ CSP مقفول هنا لأن الواجهة بتحمّل PayPal وGoogle Maps وصور من برّه،
+//    فلو فعّلته لازم تضبط القائمة البيضاء بتاعتها بدقة.
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 
 // CORS configuration
 const allowedOrigins = (process.env.CORS_ORIGIN || "")
@@ -91,7 +145,7 @@ app.use((req, res, next) => {
 
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization, ngrok-skip-browser-warning"
+      "Content-Type, Authorization"
     );
   }
 
@@ -103,8 +157,8 @@ app.use((req, res, next) => {
 });
 
 app.use(compression());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "100kb" }));
+app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 
 app.get("/api/keys/paypal", (req, res) => {
   res.send(process.env.PAYPAL_CLIENT_ID || "sb");
@@ -121,8 +175,13 @@ app.use("/api/users", userRouter);
 app.use("/api/orders", orderRouter);
 
 // Health check
+// بيعكس حالة قاعدة البيانات فعلاً: 200 لو متصلة، 503 لو لأ (عشان المنصة تعرف إن فيه مشكلة)
 app.get("/api/health", (req, res) => {
-  res.send({ status: "Server is running successfully!" });
+  const dbConnected = mongoose.connection.readyState === 1;
+  res.status(dbConnected ? 200 : 503).send({
+    status: dbConnected ? "ok" : "database unavailable",
+    database: dbConnected ? "connected" : "disconnected",
+  });
 });
 
 // Serve frontend build if available
@@ -155,7 +214,16 @@ if (fs.existsSync(buildDir)) {
 // Error handler
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).send({ message: err.message });
+  if (res.headersSent) return next(err);
+  const status = err.statusCode || err.status || 500;
+  // في production مفيش رسايل داخلية (أسماء حقول/مكتبات/مسارات) بترجع للمستخدم
+  const message =
+    process.env.NODE_ENV !== "production"
+      ? err.message
+      : status < 500
+      ? "الطلب غير صالح"
+      : "حصل خطأ في السيرفر، حاول مرة أخرى";
+  res.status(status).send({ message });
 });
 
 const port = process.env.PORT || 4000;

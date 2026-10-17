@@ -120,8 +120,7 @@ export default function PlaceOrderScreen() {
             <div className="rl-kv">
               <span>العنوان</span>
               <b>
-                {cart.shippingAddress.address}، {cart.shippingAddress.city}، {cart.shippingAddress.postalCode}،{' '}
-                {cart.shippingAddress.country}
+                {[cart.shippingAddress.address, cart.shippingAddress.city, cart.shippingAddress.postalCode, cart.shippingAddress.country].filter(Boolean).join('، ')}
               </b>
             </div>
           </Panel>

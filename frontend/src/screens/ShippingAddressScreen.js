@@ -25,7 +25,7 @@ export default function ShippingAddressScreen() {
       navigate('/signin?redirect=/shipping');
     }
   }, [userInfo, navigate]);
-  const [country, setCountry] = useState(shippingAddress.country || '');
+  const [country, setCountry] = useState(shippingAddress.country || 'مصر');
   const submitHandler = (e) => {
     e.preventDefault();
     const payload = {
@@ -75,14 +75,14 @@ export default function ShippingAddressScreen() {
               </Col>
               <Col sm={6}>
                 <Form.Group className="mb-3" controlId="postalCode">
-                  <Form.Label>الرمز البريدي</Form.Label>
-                  <Form.Control value={postalCode} onChange={(e) => setPostalCode(e.target.value)} required />
+                  <Form.Label>الرمز البريدي (اختياري)</Form.Label>
+                  <Form.Control value={postalCode} onChange={(e) => setPostalCode(e.target.value)} />
                 </Form.Group>
               </Col>
             </Row>
             <Form.Group className="mb-3" controlId="country">
-              <Form.Label>الدولة</Form.Label>
-              <Form.Control value={country} onChange={(e) => setCountry(e.target.value)} required />
+              <Form.Label>الدولة (اختياري)</Form.Label>
+              <Form.Control value={country} onChange={(e) => setCountry(e.target.value)} />
             </Form.Group>
 
             <div className="mb-4 d-flex align-items-center gap-2 flex-wrap">

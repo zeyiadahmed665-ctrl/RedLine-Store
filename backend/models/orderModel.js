@@ -20,8 +20,8 @@ const orderSchema = new mongoose.Schema(
       fullName: { type: String, required: true },
       address: { type: String, required: true },
       city: { type: String, required: true },
-      postalCode: { type: String, required: true },
-      country: { type: String, required: true },
+      postalCode: { type: String, default: '' }, // اختياري
+      country: { type: String, default: 'مصر' }, // اختياري (مصر افتراضيًا)
       location: {
         lat: Number,
         lng: Number,
@@ -58,6 +58,11 @@ const orderSchema = new mongoose.Schema(
     pointsDiscount: { type: Number, default: 0 },
     pointsEarned: { type: Number, default: 0 },
     pointsAwarded: { type: Boolean, default: false },
+<<<<<<< HEAD
+=======
+    // 📦 المخزون اتخصم لما الطلب اتعمل (عشان نرجّعه لو الأدمن مسح طلب لسه ما اتسلّمش)
+    stockDeducted: { type: Boolean, default: false },
+>>>>>>> b00f57d (describe the changes)
     isDelivered: { type: Boolean, default: false },
     deliveredAt: { type: Date },
   },

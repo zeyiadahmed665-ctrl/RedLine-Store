@@ -55,8 +55,11 @@ export default function ResetPasswordScreen() {
           <Form.Control
             type="password"
             required
+            minLength={8}
+            autoComplete="new-password"
             onChange={(e) => setPassword(e.target.value)}
           />
+          <Form.Text muted>8 أحرف على الأقل، وتحتوي على حروف وأرقام.</Form.Text>
         </Form.Group>
         <Form.Group className="mb-3" controlId="confirmPassword">
           <Form.Label>تأكيد كلمة المرور الجديدة</Form.Label>

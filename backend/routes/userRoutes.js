@@ -2,11 +2,32 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import expressAsyncHandler from 'express-async-handler';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
 import User from '../models/userModel.js';
-import { isAuth, isAdmin, userPayload, baseUrl, sendMail } from '../utils.js';
+import { isAuth, isAdmin, userPayload, baseUrl, sendMail, escapeHtml, mailAddress } from '../utils.js';
 import { roleOf } from '../pricing.js';
+import { asText, normalizeEmail, isValidEmail, passwordError, nameError } from '../validators.js';
 
 const userRouter = express.Router();
+
+// 🛡️ حد المحاولات (حماية من تخمين الباسورد وإغراق الإيميلات)
+const limiter = (max, windowMinutes, message) =>
+  rateLimit({
+    windowMs: windowMinutes * 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message },
+  });
+const signinLimiter = limiter(10, 15, 'محاولات كتير، حاول تاني بعد شوية');
+const signupLimiter = limiter(10, 60, 'محاولات تسجيل كتير، حاول تاني بعد شوية');
+const resetLimiter = limiter(5, 60, 'طلبات كتير، حاول تاني بعد شوية');
+
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+// عدد الأدمنز الحاليين (بالدور مش بالإيميل)
+const adminCount = () => User.countDocuments({ $or: [{ role: 'admin' }, { isAdmin: true }] });
 
 userRouter.get(
   '/',
@@ -52,12 +73,36 @@ userRouter.put(
   expressAsyncHandler(async (req, res) => {
     const user = await User.findById(req.user._id);
     if (user) {
+<<<<<<< HEAD
       const newEmail = req.body.email && req.body.email.trim().toLowerCase();
       const emailChanged = newEmail && newEmail !== String(user.email).toLowerCase();
       // 🔒 تغيير الإيميل أو الباسورد لازم كلمة المرور الحالية
       if (emailChanged || req.body.password) {
         if (!req.body.currentPassword || !bcrypt.compareSync(req.body.currentPassword, user.password)) {
           return res.status(401).send({ message: 'كلمة المرور الحالية غير صحيحة' });
+=======
+      const newEmail = normalizeEmail(req.body.email);
+      const emailChanged = newEmail && newEmail !== String(user.email).toLowerCase();
+      if (emailChanged && !isValidEmail(newEmail)) {
+        return res.status(400).send({ message: 'شكل البريد الإلكتروني غير صحيح' });
+      }
+      const newName = asText(req.body.name);
+      if (newName && nameError(newName)) {
+        return res.status(400).send({ message: nameError(newName) });
+      }
+      if (req.body.password) {
+        const pwErr = passwordError(req.body.password);
+        if (pwErr) return res.status(400).send({ message: pwErr });
+      }
+      // 🔒 تغيير الإيميل أو الباسورد لازم كلمة المرور الحالية
+      // (400 مش 401 عشان الواجهة متفتكرش إن الجلسة انتهت)
+      if (emailChanged || req.body.password) {
+        if (
+          typeof req.body.currentPassword !== 'string' ||
+          !bcrypt.compareSync(req.body.currentPassword, user.password)
+        ) {
+          return res.status(400).send({ message: 'كلمة المرور الحالية غير صحيحة' });
+>>>>>>> b00f57d (describe the changes)
         }
       }
       if (emailChanged) {
@@ -65,9 +110,15 @@ userRouter.put(
         if (taken) return res.status(400).send({ message: 'البريد الإلكتروني مستخدم بالفعل' });
         user.email = newEmail;
       }
+<<<<<<< HEAD
       user.name = req.body.name || user.name;
       if (req.body.phone !== undefined) user.phone = req.body.phone;
       if (req.body.businessName !== undefined) user.businessName = req.body.businessName;
+=======
+      if (newName) user.name = newName;
+      if (req.body.phone !== undefined) user.phone = asText(req.body.phone).slice(0, 30);
+      if (req.body.businessName !== undefined) user.businessName = asText(req.body.businessName).slice(0, 100);
+>>>>>>> b00f57d (describe the changes)
       // 🏭 العميل العادي يقدر يطلب تفعيل حساب تاجر (والأدمن هو اللي يوافق)
       if (req.body.requestWholesale && roleOf(user) === 'user') user.wholesaleRequest = true;
       if (req.body.password) {
@@ -82,57 +133,71 @@ userRouter.put(
   })
 );
 
+// 🔑 استعادة كلمة المرور
+// - الإيميل بيتحوّل لنص (مفيش حقن)، والرد دايمًا واحد سواء الإيميل مسجّل أو لأ (مفيش كشف لمين عندك)
+// - الرابط مش بيتكتب في اللوج
+// - اللي بيتخزّن في القاعدة هو بصمة (hash) التوكن، ويتمسح بعد الاستخدام
+const FORGET_REPLY = {
+  message: 'لو الإيميل ده مسجّل عندنا، هنبعتلك رابط إعادة تعيين كلمة المرور.',
+};
+
 userRouter.post(
   '/forget-password',
+  resetLimiter,
   expressAsyncHandler(async (req, res) => {
-    const user = await User.findOne({ email: req.body.email });
-
+    const email = normalizeEmail(req.body.email);
+    if (!email || !isValidEmail(email)) {
+      return res.send(FORGET_REPLY);
+    }
+    const user = await User.findOne({ email });
     if (user) {
-      const token = jwt.sign({ _id: user._id }, process.env.JWT_SECRET, {
-        expiresIn: '3h',
+      const token = jwt.sign({ _id: user._id, purpose: 'reset' }, process.env.JWT_SECRET, {
+        expiresIn: '1h',
       });
-      user.resetToken = token;
+      user.resetToken = hashToken(token);
       await user.save();
 
-      //reset link
-      console.log(`${baseUrl()}/reset-password/${token}`);
-
+      const link = `${baseUrl()}/reset-password/${encodeURIComponent(token)}`;
       sendMail({
-        to: `${user.name} <${user.email}>`,
+        to: mailAddress(user.name, user.email),
         subject: `إعادة تعيين كلمة المرور`,
-        html: `<div dir="rtl" style="text-align:right"> 
-             <p>اضغط على الرابط التالي لإعادة تعيين كلمة المرور:</p> 
-             <a href="${baseUrl()}/reset-password/${token}">إعادة تعيين كلمة المرور</a>
+        html: `<div dir="rtl" style="text-align:right">
+             <p>اضغط على الرابط التالي لإعادة تعيين كلمة المرور (صالح لمدة ساعة):</p>
+             <a href="${escapeHtml(link)}">إعادة تعيين كلمة المرور</a>
+             <p>لو مطلبتش ده، تجاهل الرسالة.</p>
              </div>`,
       });
-      res.send({ message: 'أرسلنا رابط إعادة تعيين كلمة المرور على بريدك الإلكتروني.' });
-    } else {
-      res.status(404).send({ message: 'المستخدم غير موجود' });
     }
+    res.send(FORGET_REPLY);
   })
 );
 
 userRouter.post(
   '/reset-password',
+  resetLimiter,
   expressAsyncHandler(async (req, res) => {
-    jwt.verify(req.body.token, process.env.JWT_SECRET, async (err, decode) => {
-      if (err) {
-        res.status(401).send({ message: 'الجلسة غير صالحة، سجّل الدخول مرة أخرى' });
-      } else {
-        const user = await User.findOne({ resetToken: req.body.token });
-        if (user) {
-          if (req.body.password) {
-            user.password = bcrypt.hashSync(req.body.password, 8);
-            await user.save();
-            res.send({
-              message: 'تم تغيير كلمة المرور بنجاح',
-            });
-          }
-        } else {
-          res.status(404).send({ message: 'المستخدم غير موجود' });
-        }
-      }
-    });
+    const token = typeof req.body.token === 'string' ? req.body.token : '';
+    const pwErr = passwordError(req.body.password);
+    if (pwErr) return res.status(400).send({ message: pwErr });
+
+    const invalid = () =>
+      res.status(400).send({ message: 'رابط إعادة التعيين غير صالح أو انتهت صلاحيته' });
+
+    let decode;
+    try {
+      decode = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (e) {
+      return invalid();
+    }
+    if (!decode || decode.purpose !== 'reset') return invalid();
+
+    const user = await User.findOne({ _id: decode._id, resetToken: hashToken(token) });
+    if (!user) return invalid();
+
+    user.password = bcrypt.hashSync(req.body.password, 8);
+    user.resetToken = undefined; // التوكن يُستخدم مرة واحدة بس
+    await user.save();
+    res.send({ message: 'تم تغيير كلمة المرور بنجاح' });
   })
 );
 
@@ -143,8 +208,20 @@ userRouter.put(
   expressAsyncHandler(async (req, res) => {
     const user = await User.findById(req.params.id);
     if (user) {
-      user.name = req.body.name || user.name;
-      user.email = req.body.email || user.email;
+      const newName = asText(req.body.name);
+      if (newName) {
+        if (nameError(newName)) return res.status(400).send({ message: nameError(newName) });
+        user.name = newName;
+      }
+      const newEmail = normalizeEmail(req.body.email);
+      if (newEmail && newEmail !== String(user.email).toLowerCase()) {
+        if (!isValidEmail(newEmail)) {
+          return res.status(400).send({ message: 'شكل البريد الإلكتروني غير صحيح' });
+        }
+        const taken = await User.findOne({ email: newEmail, _id: { $ne: user._id } });
+        if (taken) return res.status(400).send({ message: 'البريد الإلكتروني مستخدم بالفعل' });
+        user.email = newEmail;
+      }
       // 🎭 الدور: user / wholesale / admin (و isAdmin القديم لسه مدعوم)
       const wanted = ['user', 'wholesale', 'admin'].includes(req.body.role)
         ? req.body.role
@@ -156,12 +233,16 @@ userRouter.put(
       if (String(user._id) === String(req.user._id) && wanted !== 'admin') {
         return res.status(400).send({ message: 'مينفعش تشيل صلاحية الأدمن من حسابك أنت' });
       }
+      // 🛡️ مينفعش نشيل صلاحية آخر أدمن (بالدور)
+      if (roleOf(user) === 'admin' && wanted !== 'admin' && (await adminCount()) <= 1) {
+        return res.status(400).send({ message: 'لا يمكن إزالة صلاحية آخر أدمن في المتجر' });
+      }
       user.role = wanted;
       user.isAdmin = wanted === 'admin';
       // أي قرار من الأدمن (موافقة أو رفض) بيقفل طلب التاجر المعلّق
       user.wholesaleRequest = false;
-      if (req.body.businessName !== undefined) user.businessName = req.body.businessName;
-      if (req.body.phone !== undefined) user.phone = req.body.phone;
+      if (req.body.businessName !== undefined) user.businessName = asText(req.body.businessName).slice(0, 100);
+      if (req.body.phone !== undefined) user.phone = asText(req.body.phone).slice(0, 30);
       const updatedUser = await user.save();
       res.send({
         message: 'تم تحديث بيانات المستخدم',
@@ -180,8 +261,9 @@ userRouter.delete(
   expressAsyncHandler(async (req, res) => {
     const user = await User.findById(req.params.id);
     if (user) {
-      if (user.email === 'admin@example.com') {
-        res.status(400).send({ message: 'لا يمكن حذف حساب الأدمن' });
+      // 🛡️ حماية آخر أدمن بالدور (مش بإيميل معيّن)
+      if (roleOf(user) === 'admin' && (await adminCount()) <= 1) {
+        res.status(400).send({ message: 'لا يمكن حذف آخر أدمن في المتجر' });
         return;
       }
       await user.remove();
@@ -193,14 +275,18 @@ userRouter.delete(
 );
 userRouter.post(
   '/signin',
+  signinLimiter,
   expressAsyncHandler(async (req, res) => {
-    const raw = String(req.body.email || '').trim();
-    const user = await User.findOne({ email: { $in: [raw, raw.toLowerCase()] } });
-    if (user) {
-      if (bcrypt.compareSync(req.body.password, user.password)) {
-        res.send(userPayload(user));
-        return;
-      }
+    const email = normalizeEmail(req.body.email);
+    const password = typeof req.body.password === 'string' ? req.body.password : '';
+    // الحسابات القديمة ممكن يكون إيميلها محفوظ بحروف كبيرة، فبندوّر بالشكلين
+    const raw = asText(req.body.email);
+    const user = email
+      ? await User.findOne({ email: { $in: [raw, email] } })
+      : null;
+    if (user && password && bcrypt.compareSync(password, user.password)) {
+      res.send(userPayload(user));
+      return;
     }
     res.status(401).send({ message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });
   })
@@ -208,20 +294,31 @@ userRouter.post(
 
 userRouter.post(
   '/signup',
+  signupLimiter,
   expressAsyncHandler(async (req, res) => {
-    const email = String(req.body.email || '').trim().toLowerCase();
+    const name = asText(req.body.name);
+    const email = normalizeEmail(req.body.email);
+
+    const nErr = nameError(name);
+    if (nErr) return res.status(400).send({ message: nErr });
+    if (!isValidEmail(email)) {
+      return res.status(400).send({ message: 'شكل البريد الإلكتروني غير صحيح' });
+    }
+    const pwErr = passwordError(req.body.password);
+    if (pwErr) return res.status(400).send({ message: pwErr });
+
     if (await User.findOne({ email })) {
       return res.status(400).send({ message: 'البريد الإلكتروني مستخدم بالفعل' });
     }
     // 🏭 لو سجّل كتاجر: الحساب بيبدأ عادي، وبيتحط في قايمة انتظار موافقة الأدمن
     const wantsWholesale = req.body.accountType === 'wholesale';
     const newUser = new User({
-      name: req.body.name,
+      name,
       email,
       password: bcrypt.hashSync(req.body.password),
       wholesaleRequest: wantsWholesale,
-      businessName: wantsWholesale ? req.body.businessName || '' : '',
-      phone: req.body.phone || '',
+      businessName: wantsWholesale ? asText(req.body.businessName).slice(0, 100) : '',
+      phone: asText(req.body.phone).slice(0, 30),
     });
     const user = await newUser.save();
     res.send(userPayload(user));

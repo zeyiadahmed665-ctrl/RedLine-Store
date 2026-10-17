@@ -265,8 +265,7 @@ export default function OrderScreen() {
             <div className="rl-kv">
               <span>العنوان</span>
               <b>
-                {order.shippingAddress.address}، {order.shippingAddress.city}، {order.shippingAddress.postalCode}،{' '}
-                {order.shippingAddress.country}
+                {[order.shippingAddress.address, order.shippingAddress.city, order.shippingAddress.postalCode, order.shippingAddress.country].filter(Boolean).join('، ')}
                 {order.shippingAddress.location && order.shippingAddress.location.lat && (
                   <>
                     {' '}

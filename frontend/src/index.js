@@ -14,8 +14,6 @@ import { StoreProvider } from './Store';
 // رابط الباك إند (Koyeb). على Vercel حطه في Environment Variables باسم REACT_APP_API_URL
 // محلياً سيبه فاضي وهيشتغل على الـ proxy اللي في package.json
 axios.defaults.baseURL = (process.env.REACT_APP_API_URL || '').replace(/\/+$/, '');
-// بيتخطى صفحة التحذير بتاعة ngrok (النسخة المجانية) اللي بتكسر الـ CORS
-axios.defaults.headers.common['ngrok-skip-browser-warning'] = 'true';
 
 // 🔑 بيبعت توكن المستخدم مع كل طلب تلقائياً — عشان التاجر المعتمد يشوف أسعار الجملة في كل الصفحات
 axios.interceptors.request.use((config) => {

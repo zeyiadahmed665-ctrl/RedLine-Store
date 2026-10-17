@@ -27,4 +27,4 @@
   ومع قاعدة دايمة: حط ALLOW_SEED=true في backend/.env، افتح http://localhost:4000/api/seed مرة واحدة، وبعدها شيل السطر.
 - أول تشغيل بالقاعدة المؤقتة بينزّل ملف MongoDB (محتاج نت)، بعد كده بيتخزّن.
   لو النسخة الافتراضية (7.0.24) مش بتشتغل: ضيف في backend/.env  MONGOMS_VERSION=6.0.14
-Admin login (تجريبي): admin@example.com / 123456   (غيّره قبل التسليم)
+Admin login (تجريبي): الباسوردات بتتطبع في الـ console لما السيرفر يشتغل (أو حط ADMIN_EMAIL / ADMIN_PASSWORD في backend/.env)
