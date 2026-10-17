@@ -1,3 +1,4 @@
+
 import express from 'express';
 import expressAsyncHandler from 'express-async-handler';
 import Order from '../models/orderModel.js';
@@ -17,35 +18,45 @@ import {
 
 const orderRouter = express.Router();
 
-// 📦 المخزون: خصم ذرّي (مشروط بوجود كمية كفاية) عشان طلبين في نفس اللحظة ميبيعوش آخر قطعة مرتين
+// خصم المخزون بشكل آمن
 const deductStock = async (orderItems) => {
   const done = [];
+
   for (const it of orderItems) {
     const r = await Product.updateOne(
       { _id: it.product, countInStock: { $gte: it.quantity } },
       { $inc: { countInStock: -it.quantity } }
     );
+
     if (r.modifiedCount !== 1) {
-      await restoreStock(done); // رجّع اللي اتخصم قبل كده
+      await restoreStock(done);
       return it;
     }
+
     done.push(it);
   }
-  return null; // null = نجح
+
+  return null;
 };
+
 const restoreStock = async (orderItems) => {
   for (const it of orderItems) {
-    await Product.updateOne({ _id: it.product }, { $inc: { countInStock: it.quantity } });
+    await Product.updateOne(
+      { _id: it.product },
+      { $inc: { countInStock: it.quantity } }
+    );
   }
 };
 
-// 🏠 عنوان الشحن: بناخد الحقول المعروفة بس. الرمز البريدي والدولة اختياريين (الدولة مصر افتراضيًا)
+// تنظيف عنوان الشحن
 const cleanShippingAddress = (raw) => {
   const a = raw && typeof raw === 'object' ? raw : {};
   const fullName = asText(a.fullName).slice(0, 100);
   const address = asText(a.address).slice(0, 300);
   const city = asText(a.city).slice(0, 100);
+
   if (!fullName || !address || !city) return null;
+
   const out = {
     fullName,
     address,
@@ -53,8 +64,10 @@ const cleanShippingAddress = (raw) => {
     postalCode: asText(a.postalCode).slice(0, 20),
     country: asText(a.country).slice(0, 60) || 'مصر',
   };
+
   if (a.location && typeof a.location === 'object') {
     const { lat, lng } = a.location;
+
     out.location = {
       lat: Number.isFinite(Number(lat)) ? Number(lat) : undefined,
       lng: Number.isFinite(Number(lng)) ? Number(lng) : undefined,
@@ -64,6 +77,7 @@ const cleanShippingAddress = (raw) => {
       googleAddressId: asText(a.location.googleAddressId).slice(0, 200),
     };
   }
+
   return out;
 };
 
@@ -72,57 +86,84 @@ orderRouter.get(
   isAuth,
   isAdmin,
   expressAsyncHandler(async (req, res) => {
-    const orders = await Order.find().sort({ createdAt: -1 }).populate('user', 'name email');
+    const orders = await Order.find()
+      .sort({ createdAt: -1 })
+      .populate('user', 'name email');
+
     res.send(orders);
   })
 );
 
-// 🧾 إنشاء طلب — السيرفر بيحسب كل الأسعار بنفسه من القاعدة (قطاعي أو جملة حسب حساب العميل)،
-//    فمحدش يقدر يغيّر السعر من المتصفح. وبيتأكد من المخزون ومن الحد الأدنى للجملة.
+// إنشاء طلب جديد
 orderRouter.post(
   '/',
   isAuth,
   expressAsyncHandler(async (req, res) => {
-    const items = Array.isArray(req.body.orderItems) ? req.body.orderItems : [];
+    const items = Array.isArray(req.body.orderItems)
+      ? req.body.orderItems
+      : [];
+
     if (items.length === 0) {
       return res.status(400).send({ message: 'السلة فارغة' });
     }
+
     const shippingAddress = cleanShippingAddress(req.body.shippingAddress);
+
     if (!shippingAddress) {
-      return res.status(400).send({ message: 'من فضلك اكتب الاسم والعنوان والمدينة' });
+      return res.status(400).send({
+        message: 'من فضلك اكتب الاسم والعنوان والمدينة',
+      });
     }
+
     const paymentMethod = asText(req.body.paymentMethod);
+
     if (!paymentMethod) {
       return res.status(400).send({ message: 'اختر طريقة الدفع' });
     }
-    // الدور الحقيقي من القاعدة مش من التوكن (ممكن يكون اتغيّر بعد تسجيل الدخول)
+
     const buyer = await User.findById(req.user._id).select('role isAdmin');
-    if (!buyer) return res.status(401).send({ message: 'المستخدم غير موجود' });
 
-    const products = await Product.find({ _id: { $in: items.map((x) => x._id) } });
+    if (!buyer) {
+      return res.status(401).send({ message: 'المستخدم غير موجود' });
+    }
+
+    const products = await Product.find({
+      _id: { $in: items.map((x) => x._id) },
+    });
+
     const byId = new Map(products.map((p) => [String(p._id), p]));
-
     const orderItems = [];
+
     for (const x of items) {
       const product = byId.get(String(x._id));
       const quantity = Math.floor(Number(x.quantity));
+
       if (!product) {
-        return res.status(404).send({ message: 'أحد المنتجات لم يعد موجودًا' });
+        return res.status(404).send({
+          message: 'أحد المنتجات لم يعد موجودًا',
+        });
       }
+
       if (!(quantity >= 1)) {
-        return res.status(400).send({ message: `كمية غير صحيحة للمنتج: ${product.name}` });
+        return res.status(400).send({
+          message: `كمية غير صحيحة للمنتج: ${product.name}`,
+        });
       }
+
       const min = minQtyFor(product, buyer);
+
       if (quantity < min) {
         return res.status(400).send({
           message: `الحد الأدنى لطلب "${product.name}" بسعر الجملة هو ${min} قطعة`,
         });
       }
+
       if (product.countInStock < quantity) {
         return res.status(400).send({
           message: `الكمية المتاحة من "${product.name}" هي ${product.countInStock} فقط`,
         });
       }
+
       orderItems.push({
         slug: product.slug,
         name: product.name,
@@ -133,45 +174,53 @@ orderRouter.post(
       });
     }
 
-    const itemsPrice = round2(orderItems.reduce((a, c) => a + c.price * c.quantity, 0));
-    const shippingPrice = itemsPrice > FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
+    const itemsPrice = round2(
+      orderItems.reduce((a, c) => a + c.price * c.quantity, 0)
+    );
+    const shippingPrice =
+      itemsPrice > FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
     const taxPrice = round2(TAX_RATE * itemsPrice);
     const totalPrice = round2(itemsPrice + shippingPrice + taxPrice);
 
-<<<<<<< HEAD
-=======
-    // 📦 خصم المخزون بشكل آمن (لو قطعة خلصت في اللحظة دي بنرفض الطلب كله)
+    // خصم المخزون بشكل آمن
     const outOfStock = await deductStock(orderItems);
+
     if (outOfStock) {
       return res.status(400).send({
         message: `الكمية المطلوبة من "${outOfStock.name}" لم تعد متاحة`,
       });
     }
 
->>>>>>> b00f57d (describe the changes)
-    // 🎁 استبدال النقاط (قطاعي فقط) — بنخصم الرصيد بشكل ذرّي عشان محدش يصرف نفس النقاط مرتين
+    // استبدال نقاط الولاء
     let pointsUsed = 0;
     let pointsDiscount = 0;
     const requested = Math.floor(Number(req.body.pointsToUse) || 0);
+
     if (requested > 0 && !paysWholesale(buyer)) {
-      const maxByOrder = Math.floor((itemsPrice * MAX_POINTS_DISCOUNT_RATE) / POINT_VALUE);
+      const maxByOrder = Math.floor(
+        (itemsPrice * MAX_POINTS_DISCOUNT_RATE) / POINT_VALUE
+      );
       const wanted = Math.min(requested, maxByOrder);
+
       if (wanted > 0) {
         const deducted = await User.findOneAndUpdate(
           { _id: req.user._id, loyaltyPoints: { $gte: wanted } },
           { $inc: { loyaltyPoints: -wanted } }
         );
+
         if (!deducted) {
-<<<<<<< HEAD
-=======
           await restoreStock(orderItems);
->>>>>>> b00f57d (describe the changes)
-          return res.status(400).send({ message: 'رصيد النقاط غير كافي' });
+
+          return res.status(400).send({
+            message: 'رصيد النقاط غير كافي',
+          });
         }
+
         pointsUsed = wanted;
         pointsDiscount = round2(wanted * POINT_VALUE);
       }
     }
+
     const finalTotal = round2(Math.max(0, totalPrice - pointsDiscount));
 
     const newOrder = new Order({
@@ -179,14 +228,9 @@ orderRouter.post(
       orderType: paysWholesale(buyer) ? 'wholesale' : 'retail',
       pointsUsed,
       pointsDiscount,
-<<<<<<< HEAD
-      shippingAddress: req.body.shippingAddress,
-      paymentMethod: req.body.paymentMethod,
-=======
       shippingAddress,
       paymentMethod,
       stockDeducted: true,
->>>>>>> b00f57d (describe the changes)
       itemsPrice,
       shippingPrice,
       taxPrice,
@@ -195,19 +239,26 @@ orderRouter.post(
     });
 
     let order;
+
     try {
       order = await newOrder.save();
     } catch (e) {
-<<<<<<< HEAD
-      // لو الحفظ فشل نرجّع النقاط اللي اتخصمت
-=======
-      // لو الحفظ فشل نرجّع المخزون والنقاط اللي اتخصمت
       await restoreStock(orderItems);
->>>>>>> b00f57d (describe the changes)
-      if (pointsUsed > 0) await User.updateOne({ _id: req.user._id }, { $inc: { loyaltyPoints: pointsUsed } });
+
+      if (pointsUsed > 0) {
+        await User.updateOne(
+          { _id: req.user._id },
+          { $inc: { loyaltyPoints: pointsUsed } }
+        );
+      }
+
       throw e;
     }
-    res.status(201).send({ message: 'تم إنشاء الطلب بنجاح', order });
+
+    res.status(201).send({
+      message: 'تم إنشاء الطلب بنجاح',
+      order,
+    });
   })
 );
 
@@ -225,6 +276,7 @@ orderRouter.get(
         },
       },
     ]);
+
     const users = await User.aggregate([
       {
         $group: {
@@ -233,7 +285,7 @@ orderRouter.get(
         },
       },
     ]);
-    // 🏭 جملة vs قطاعي: عدد وقيمة الطلبات لكل نوع + عدد التجار والطلبات المعلّقة
+
     const ordersByType = await Order.aggregate([
       {
         $group: {
@@ -243,18 +295,28 @@ orderRouter.get(
         },
       },
     ]);
+
     const wholesaleUsers = await User.countDocuments({ role: 'wholesale' });
-    const pendingWholesale = await User.countDocuments({ wholesaleRequest: true });
+    const pendingWholesale = await User.countDocuments({
+      wholesaleRequest: true,
+    });
+
     const dailyOrders = await Order.aggregate([
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          _id: {
+            $dateToString: {
+              format: '%Y-%m-%d',
+              date: '$createdAt',
+            },
+          },
           orders: { $sum: 1 },
           sales: { $sum: '$totalPrice' },
         },
       },
       { $sort: { _id: 1 } },
     ]);
+
     const productCategories = await Product.aggregate([
       {
         $group: {
@@ -263,6 +325,7 @@ orderRouter.get(
         },
       },
     ]);
+
     res.send({
       users,
       orders,
@@ -279,7 +342,10 @@ orderRouter.get(
   '/mine',
   isAuth,
   expressAsyncHandler(async (req, res) => {
-    const orders = await Order.find({ user: req.user._id }).sort({ createdAt: -1 });
+    const orders = await Order.find({ user: req.user._id }).sort({
+      createdAt: -1,
+    });
+
     res.send(orders);
   })
 );
@@ -289,11 +355,15 @@ orderRouter.get(
   isAuth,
   expressAsyncHandler(async (req, res) => {
     const order = await Order.findById(req.params.id);
+
     if (order) {
-      // 🔒 صاحب الطلب أو الأدمن بس يقدر يشوف الطلب
-      if (String(order.user) !== String(req.user._id) && !req.user.isAdmin) {
+      if (
+        String(order.user) !== String(req.user._id) &&
+        !req.user.isAdmin
+      ) {
         return res.status(403).send({ message: 'غير مسموح' });
       }
+
       res.send(order);
     } else {
       res.status(404).send({ message: 'الطلب غير موجود' });
@@ -304,27 +374,34 @@ orderRouter.get(
 orderRouter.put(
   '/:id/deliver',
   isAuth,
-  isAdmin, // 🔒 كان أي مستخدم مسجّل يقدر يعمل Deliver لأي طلب
+  isAdmin,
   expressAsyncHandler(async (req, res) => {
     const order = await Order.findById(req.params.id);
+
     if (order) {
       order.isDelivered = true;
       order.deliveredAt = Date.now();
       order.status = 'delivered';
-      // 🎁 إضافة نقاط الولاء مرة واحدة فقط (قطاعي)
+
       if (!order.pointsAwarded && order.orderType !== 'wholesale') {
         const earned = Math.floor(order.itemsPrice / 100) * POINTS_PER_100;
+
         if (earned > 0) {
-          await User.updateOne({ _id: order.user }, { $inc: { loyaltyPoints: earned } });
+          await User.updateOne(
+            { _id: order.user },
+            { $inc: { loyaltyPoints: earned } }
+          );
           order.pointsEarned = earned;
         }
+
         order.pointsAwarded = true;
       }
-      // 💵 الدفع عند الاستلام: الفلوس بتتحصّل وقت التسليم فالطلب بيتعلّم "مدفوع" هنا
+
       if (order.paymentMethod === 'Cash on Delivery' && !order.isPaid) {
         order.isPaid = true;
         order.paidAt = Date.now();
       }
+
       await order.save();
       res.send({ message: 'تم تسليم الطلب' });
     } else {
@@ -333,21 +410,31 @@ orderRouter.put(
   })
 );
 
-// 📦 تحديث مرحلة الطلب (أدمن): قيد التجهيز / جاري الشحن — التسليم له مسار خاص بيضيف النقاط
+// تحديث مرحلة الطلب
 orderRouter.put(
   '/:id/status',
   isAuth,
   isAdmin,
   expressAsyncHandler(async (req, res) => {
     const { status } = req.body;
+
     if (!['processing', 'shipped'].includes(status)) {
       return res.status(400).send({ message: 'مرحلة غير صحيحة' });
     }
+
     const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).send({ message: 'الطلب غير موجود' });
-    if (order.isDelivered) return res.status(400).send({ message: 'الطلب اتسلّم بالفعل' });
+
+    if (!order) {
+      return res.status(404).send({ message: 'الطلب غير موجود' });
+    }
+
+    if (order.isDelivered) {
+      return res.status(400).send({ message: 'الطلب اتسلّم بالفعل' });
+    }
+
     order.status = status;
     await order.save();
+
     res.send({ message: 'تم تحديث حالة الطلب', status });
   })
 );
@@ -360,11 +447,15 @@ orderRouter.put(
       'user',
       'email name'
     );
+
     if (order) {
-      // 🔒 صاحب الطلب بس (أو الأدمن) يقدر يسجّل الدفع
-      if (String(order.user._id) !== String(req.user._id) && !req.user.isAdmin) {
+      if (
+        String(order.user._id) !== String(req.user._id) &&
+        !req.user.isAdmin
+      ) {
         return res.status(403).send({ message: 'غير مسموح' });
       }
+
       order.isPaid = true;
       order.paidAt = Date.now();
       order.paymentResult = {
@@ -375,6 +466,7 @@ orderRouter.put(
       };
 
       const updatedOrder = await order.save();
+
       sendMail({
         to: mailAddress(order.user.name, order.user.email),
         subject: `طلب جديد رقم ${order._id}`,
@@ -388,24 +480,31 @@ orderRouter.put(
   })
 );
 
-// 🗑️ مسح طلب. لو الطلب لسه ما اتسلّمش بنعتبره إلغاء: بنرجّع المخزون والنقاط اللي العميل استخدمها.
-// (الطلب المسلَّم بيتمسح كسجل بس، من غير ما نرجّع حاجة)
+// حذف طلب واسترجاع المخزون والنقاط عند الإلغاء قبل التسليم
 orderRouter.delete(
   '/:id',
   isAuth,
   isAdmin,
   expressAsyncHandler(async (req, res) => {
-    // الحذف ذرّي: اللي بيمسح الطلب هو الوحيد اللي بيرجّع المخزون (مفيش رجوع مرتين)
     const order = await Order.findByIdAndDelete(req.params.id);
-    if (!order) return res.status(404).send({ message: 'الطلب غير موجود' });
+
+    if (!order) {
+      return res.status(404).send({ message: 'الطلب غير موجود' });
+    }
 
     if (!order.isDelivered) {
-      // الطلبات القديمة (قبل التعديل ده) المخزون ماكانش بيتخصم منها، فمنرجّعش حاجة ليها
-      if (order.stockDeducted) await restoreStock(order.orderItems);
+      if (order.stockDeducted) {
+        await restoreStock(order.orderItems);
+      }
+
       if (order.pointsUsed > 0) {
-        await User.updateOne({ _id: order.user }, { $inc: { loyaltyPoints: order.pointsUsed } });
+        await User.updateOne(
+          { _id: order.user },
+          { $inc: { loyaltyPoints: order.pointsUsed } }
+        );
       }
     }
+
     res.send({ message: 'تم حذف الطلب' });
   })
 );
