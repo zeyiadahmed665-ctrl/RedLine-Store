@@ -5,7 +5,14 @@ import User from '../models/userModel.js';
 import Product from '../models/productModel.js';
 import { isAuth, isAdmin, sendMail, payOrderEmailTemplate } from '../utils.js';
 import { paysWholesale, minQtyFor, unitPriceFor, round2 } from '../pricing.js';
-import { TAX_RATE, SHIPPING_FEE, FREE_SHIPPING_THRESHOLD } from '../config.js';
+import {
+  TAX_RATE,
+  SHIPPING_FEE,
+  FREE_SHIPPING_THRESHOLD,
+  POINTS_PER_100,
+  POINT_VALUE,
+  MAX_POINTS_DISCOUNT_RATE,
+} from '../config.js';
 
 const orderRouter = express.Router();
 
@@ -72,19 +79,49 @@ orderRouter.post(
     const taxPrice = round2(TAX_RATE * itemsPrice);
     const totalPrice = round2(itemsPrice + shippingPrice + taxPrice);
 
+    // 🎁 استبدال النقاط (قطاعي فقط) — بنخصم الرصيد بشكل ذرّي عشان محدش يصرف نفس النقاط مرتين
+    let pointsUsed = 0;
+    let pointsDiscount = 0;
+    const requested = Math.floor(Number(req.body.pointsToUse) || 0);
+    if (requested > 0 && !paysWholesale(buyer)) {
+      const maxByOrder = Math.floor((itemsPrice * MAX_POINTS_DISCOUNT_RATE) / POINT_VALUE);
+      const wanted = Math.min(requested, maxByOrder);
+      if (wanted > 0) {
+        const deducted = await User.findOneAndUpdate(
+          { _id: req.user._id, loyaltyPoints: { $gte: wanted } },
+          { $inc: { loyaltyPoints: -wanted } }
+        );
+        if (!deducted) {
+          return res.status(400).send({ message: 'رصيد النقاط غير كافي' });
+        }
+        pointsUsed = wanted;
+        pointsDiscount = round2(wanted * POINT_VALUE);
+      }
+    }
+    const finalTotal = round2(Math.max(0, totalPrice - pointsDiscount));
+
     const newOrder = new Order({
       orderItems,
       orderType: paysWholesale(buyer) ? 'wholesale' : 'retail',
+      pointsUsed,
+      pointsDiscount,
       shippingAddress: req.body.shippingAddress,
       paymentMethod: req.body.paymentMethod,
       itemsPrice,
       shippingPrice,
       taxPrice,
-      totalPrice,
+      totalPrice: finalTotal,
       user: req.user._id,
     });
 
-    const order = await newOrder.save();
+    let order;
+    try {
+      order = await newOrder.save();
+    } catch (e) {
+      // لو الحفظ فشل نرجّع النقاط اللي اتخصمت
+      if (pointsUsed > 0) await User.updateOne({ _id: req.user._id }, { $inc: { loyaltyPoints: pointsUsed } });
+      throw e;
+    }
     res.status(201).send({ message: 'تم إنشاء الطلب بنجاح', order });
   })
 );
@@ -188,6 +225,16 @@ orderRouter.put(
     if (order) {
       order.isDelivered = true;
       order.deliveredAt = Date.now();
+      order.status = 'delivered';
+      // 🎁 إضافة نقاط الولاء مرة واحدة فقط (قطاعي)
+      if (!order.pointsAwarded && order.orderType !== 'wholesale') {
+        const earned = Math.floor(order.itemsPrice / 100) * POINTS_PER_100;
+        if (earned > 0) {
+          await User.updateOne({ _id: order.user }, { $inc: { loyaltyPoints: earned } });
+          order.pointsEarned = earned;
+        }
+        order.pointsAwarded = true;
+      }
       // 💵 الدفع عند الاستلام: الفلوس بتتحصّل وقت التسليم فالطلب بيتعلّم "مدفوع" هنا
       if (order.paymentMethod === 'Cash on Delivery' && !order.isPaid) {
         order.isPaid = true;
@@ -198,6 +245,25 @@ orderRouter.put(
     } else {
       res.status(404).send({ message: 'الطلب غير موجود' });
     }
+  })
+);
+
+// 📦 تحديث مرحلة الطلب (أدمن): قيد التجهيز / جاري الشحن — التسليم له مسار خاص بيضيف النقاط
+orderRouter.put(
+  '/:id/status',
+  isAuth,
+  isAdmin,
+  expressAsyncHandler(async (req, res) => {
+    const { status } = req.body;
+    if (!['processing', 'shipped'].includes(status)) {
+      return res.status(400).send({ message: 'مرحلة غير صحيحة' });
+    }
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).send({ message: 'الطلب غير موجود' });
+    if (order.isDelivered) return res.status(400).send({ message: 'الطلب اتسلّم بالفعل' });
+    order.status = status;
+    await order.save();
+    res.send({ message: 'تم تحديث حالة الطلب', status });
   })
 );
 

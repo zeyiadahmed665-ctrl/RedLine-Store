@@ -37,6 +37,7 @@ export const userPayload = (user) => ({
   wholesaleRequest: Boolean(user.wholesaleRequest),
   businessName: user.businessName || '',
   phone: user.phone || '',
+  loyaltyPoints: user.loyaltyPoints || 0,
   token: generateToken(user),
 });
 

@@ -1,5 +1,5 @@
 import Axios from 'axios';
-import React, { useContext, useEffect, useReducer } from 'react';
+import React, { useContext, useEffect, useReducer, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { Link, useNavigate } from 'react-router-dom';
 import Row from 'react-bootstrap/Row';
@@ -39,6 +39,19 @@ export default function PlaceOrderScreen() {
   // الأسعار هنا للعرض بس — السيرفر بيحسب السعر النهائي بنفسه (قطاعي أو جملة) عند تأكيد الطلب
   const totals = calcTotals(cart.cartItems, userInfo);
 
+  // 🎁 استبدال نقاط الولاء (قطاعي فقط) — كل نقطة = 0.1 ج.م، وأقصى خصم 30% من سعر المنتجات
+  const POINT_VALUE = 0.1;
+  const MAX_RATE = 0.3;
+  const canUsePoints = userInfo && !userInfo.isWholesale && !userInfo.isAdmin;
+  const balance = (userInfo && userInfo.loyaltyPoints) || 0;
+  const maxPoints = canUsePoints
+    ? Math.min(balance, Math.floor((totals.itemsPrice * MAX_RATE) / POINT_VALUE))
+    : 0;
+  const [usePoints, setUsePoints] = useState(false);
+  const pointsToUse = usePoints ? maxPoints : 0;
+  const pointsDiscount = Math.round(pointsToUse * POINT_VALUE * 100) / 100;
+  const finalTotal = Math.max(0, totals.totalPrice - pointsDiscount);
+
   const placeOrderHandler = async () => {
     try {
       dispatch({ type: 'CREATE_REQUEST' });
@@ -49,6 +62,7 @@ export default function PlaceOrderScreen() {
           orderItems: cart.cartItems.map((x) => ({ _id: x._id, quantity: x.quantity })),
           shippingAddress: cart.shippingAddress,
           paymentMethod: cart.paymentMethod,
+          pointsToUse,
         },
         {
           headers: {
@@ -57,6 +71,11 @@ export default function PlaceOrderScreen() {
         }
       );
       ctxDispatch({ type: 'CART_CLEAR' });
+      if (pointsToUse > 0) {
+        const updated = { ...userInfo, loyaltyPoints: balance - pointsToUse };
+        ctxDispatch({ type: 'USER_SIGNIN', payload: updated });
+        localStorage.setItem('userInfo', JSON.stringify(updated));
+      }
       dispatch({ type: 'CREATE_SUCCESS' });
       localStorage.removeItem('cartItems');
       navigate(`/order/${data.order._id}`);
@@ -154,9 +173,31 @@ export default function PlaceOrderScreen() {
                 <span>الضريبة</span>
                 <span>{money(totals.taxPrice)}</span>
               </div>
+              {maxPoints > 0 && (
+                <label className="rl-kv" style={{ cursor: 'pointer' }}>
+                  <span>
+                    <input
+                      type="checkbox"
+                      checked={usePoints}
+                      onChange={(e) => setUsePoints(e.target.checked)}
+                      className="ms-2"
+                    />
+                    استخدم {maxPoints} نقطة
+                  </span>
+                  <span style={{ color: '#14803c', fontWeight: 700 }}>
+                    -{money(Math.round(maxPoints * POINT_VALUE * 100) / 100)}
+                  </span>
+                </label>
+              )}
+              {pointsDiscount > 0 && (
+                <div className="rl-kv" style={{ color: '#14803c', fontWeight: 700 }}>
+                  <span>خصم النقاط</span>
+                  <span>-{money(pointsDiscount)}</span>
+                </div>
+              )}
               <div className="rl-kv total">
                 <span>إجمالي الطلب</span>
-                <span>{money(totals.totalPrice)}</span>
+                <span>{money(finalTotal)}</span>
               </div>
               {totals.shippingPrice > 0 && toFree > 0 && (
                 <small className="text-muted d-block mt-2">زوّد {money(toFree)} والشحن يبقى مجاني 🚚</small>

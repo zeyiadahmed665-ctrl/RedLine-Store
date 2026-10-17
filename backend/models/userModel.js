@@ -16,6 +16,8 @@ const userSchema = new mongoose.Schema(
     wholesaleRequest: { type: Boolean, default: false },
     businessName: { type: String, default: '' },
     phone: { type: String, default: '' },
+    // 🎁 رصيد نقاط الولاء
+    loyaltyPoints: { type: Number, default: 0, min: 0 },
   },
   {
     timestamps: true,

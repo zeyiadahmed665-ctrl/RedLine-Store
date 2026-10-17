@@ -1,5 +1,5 @@
 import axios from 'axios';
-import React, { useContext, useEffect, useReducer } from 'react';
+import React, { useContext, useEffect, useReducer, useState } from 'react';
 import { PayPalButtons, usePayPalScriptReducer } from '@paypal/react-paypal-js';
 import { Helmet } from 'react-helmet-async';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -174,6 +174,31 @@ export default function OrderScreen() {
     successDeliver,
   ]);
 
+  const STEPS = [
+    { key: 'placed', label: 'تم الاستلام', icon: 'fas fa-clipboard-check' },
+    { key: 'processing', label: 'قيد التجهيز', icon: 'fas fa-box-open' },
+    { key: 'shipped', label: 'جاري الشحن', icon: 'fas fa-truck' },
+    { key: 'delivered', label: 'تم التوصيل', icon: 'fas fa-check-circle' },
+  ];
+  const [localStatus, setLocalStatus] = useState(null);
+  const currentStatus =
+    order && order.isDelivered ? 'delivered' : localStatus || (order && order.status) || 'placed';
+  const currentIdx = Math.max(0, STEPS.findIndex((x) => x.key === currentStatus));
+
+  async function updateStatusHandler(status) {
+    try {
+      await axios.put(
+        `/api/orders/${order._id}/status`,
+        { status },
+        { headers: { authorization: `Bearer ${userInfo.token}` } }
+      );
+      setLocalStatus(status);
+      toast.success('تم تحديث حالة الطلب');
+    } catch (err) {
+      toast.error(getError(err));
+    }
+  }
+
   async function deliverOrderHandler() {
     try {
       dispatch({ type: 'DELIVER_REQUEST' });
@@ -208,8 +233,28 @@ export default function OrderScreen() {
           </Pill>
         )}
         <Pill type={order.isPaid ? 'ok' : 'no'}>{order.isPaid ? 'مدفوع' : 'غير مدفوع'}</Pill>
-        <Pill type={order.isDelivered ? 'ok' : 'wait'}>{order.isDelivered ? 'تم التسليم' : 'قيد التجهيز'}</Pill>
+        <Pill type={order.isDelivered ? 'ok' : 'wait'}>{STEPS[currentIdx].label}</Pill>
       </PageHead>
+      <div className="rl-track" style={{ display: 'flex', gap: '.5rem', margin: '1rem 0' }}>
+        {STEPS.map((st, i) => (
+          <div
+            key={st.key}
+            style={{
+              flex: 1,
+              textAlign: 'center',
+              padding: '.6rem .3rem',
+              borderRadius: 10,
+              fontWeight: 700,
+              fontSize: '.85rem',
+              background: i <= currentIdx ? '#111' : '#f1f1f1',
+              color: i <= currentIdx ? '#fff' : '#888',
+            }}
+          >
+            <i className={st.icon}></i>
+            <div>{st.label}</div>
+          </div>
+        ))}
+      </div>
       <Row>
         <Col lg={8}>
           <Panel icon="fas fa-truck" title="الشحن">
@@ -292,10 +337,21 @@ export default function OrderScreen() {
                 <span>الضريبة</span>
                 <span>{money(order.taxPrice)}</span>
               </div>
+              {order.pointsDiscount > 0 && (
+                <div className="rl-kv" style={{ color: '#14803c', fontWeight: 700 }}>
+                  <span>خصم النقاط ({order.pointsUsed} نقطة)</span>
+                  <span>-{money(order.pointsDiscount)}</span>
+                </div>
+              )}
               <div className="rl-kv total">
                 <span>إجمالي الطلب</span>
                 <span>{money(order.totalPrice)}</span>
               </div>
+              {order.isDelivered && order.pointsEarned > 0 && (
+                <div className="rl-banner ok">
+                  <i className="fas fa-gift"></i> كسبت {order.pointsEarned} نقطة ولاء من الطلب ده
+                </div>
+              )}
 
               {!order.isPaid && order.paymentMethod === PAYMENT_COD && (
                 <div className="rl-banner info">
@@ -316,6 +372,14 @@ export default function OrderScreen() {
               )}
               {userInfo.isAdmin && (order.isPaid || order.paymentMethod === PAYMENT_COD) && !order.isDelivered && (
                 <div className="mt-3">
+                  <div className="d-flex gap-2 mb-2">
+                    <button type="button" className="rl-btn-ghost w-100" onClick={() => updateStatusHandler('processing')}>
+                      قيد التجهيز
+                    </button>
+                    <button type="button" className="rl-btn-ghost w-100" onClick={() => updateStatusHandler('shipped')}>
+                      جاري الشحن
+                    </button>
+                  </div>
                   {loadingDeliver && <LoadingBox></LoadingBox>}
                   <button type="button" className="rl-btn-main w-100" onClick={deliverOrderHandler}>
                     <i className="fas fa-check"></i> تأكيد التسليم

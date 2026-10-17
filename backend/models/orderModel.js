@@ -47,6 +47,17 @@ const orderSchema = new mongoose.Schema(
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     isPaid: { type: Boolean, default: false },
     paidAt: { type: Date },
+    // 📦 مراحل الطلب: placed → processing → shipped → delivered
+    status: {
+      type: String,
+      enum: ['placed', 'processing', 'shipped', 'delivered'],
+      default: 'placed',
+    },
+    // 🎁 نقاط الولاء
+    pointsUsed: { type: Number, default: 0 },
+    pointsDiscount: { type: Number, default: 0 },
+    pointsEarned: { type: Number, default: 0 },
+    pointsAwarded: { type: Boolean, default: false },
     isDelivered: { type: Boolean, default: false },
     deliveredAt: { type: Date },
   },

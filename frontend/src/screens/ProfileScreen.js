@@ -16,6 +16,7 @@ export default function ProfileScreen() {
   const [phone, setPhone] = useState(userInfo.phone || '');
   const [businessName, setBusinessName] = useState(userInfo.businessName || '');
   const [password, setPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
 
   const save = async (extra = {}) => {
     try {
@@ -25,6 +26,7 @@ export default function ProfileScreen() {
           name,
           email,
           password,
+          currentPassword,
           phone,
           businessName,
           ...extra,
@@ -35,6 +37,8 @@ export default function ProfileScreen() {
       );
       ctxDispatch({ type: 'USER_SIGNIN', payload: data });
       localStorage.setItem('userInfo', JSON.stringify(data));
+      setCurrentPassword('');
+      setPassword('');
       toast.success('تم تحديث البيانات بنجاح');
     } catch (err) {
       toast.error(getError(err));
@@ -80,11 +84,32 @@ export default function ProfileScreen() {
             <Form.Label>كلمة المرور الجديدة (اتركها فاضية لو مش عايز تغيّرها)</Form.Label>
             <Form.Control type="password" onChange={(e) => setPassword(e.target.value)} />
           </Form.Group>
+          <Form.Group className="mb-3" controlId="currentPassword">
+            <Form.Label>كلمة المرور الحالية (مطلوبة لو هتغيّر الإيميل أو كلمة المرور)</Form.Label>
+            <Form.Control
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </Form.Group>
           <button type="submit" className="rl-btn-main w-100">
             حفظ
           </button>
         </form>
       </Panel>
+
+      {!userInfo.isAdmin && !userInfo.isWholesale && (
+        <Panel icon="fas fa-gift" title="نقاط الولاء" delay={0.03}>
+          <div className="rl-kv">
+            <span>رصيدك</span>
+            <b>{userInfo.loyaltyPoints || 0} نقطة</b>
+          </div>
+          <small className="text-muted">
+            كل 100 ج.م مشتريات = 10 نقاط بتتضاف بعد التسليم، وتقدر تستخدمها كخصم في صفحة مراجعة الطلب.
+          </small>
+        </Panel>
+      )}
 
       {!userInfo.isAdmin && (
         <Panel icon="fas fa-industry" title="حساب التاجر (جملة)" delay={0.05}>

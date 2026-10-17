@@ -52,8 +52,20 @@ userRouter.put(
   expressAsyncHandler(async (req, res) => {
     const user = await User.findById(req.user._id);
     if (user) {
+      const newEmail = req.body.email && req.body.email.trim().toLowerCase();
+      const emailChanged = newEmail && newEmail !== String(user.email).toLowerCase();
+      // 🔒 تغيير الإيميل أو الباسورد لازم كلمة المرور الحالية
+      if (emailChanged || req.body.password) {
+        if (!req.body.currentPassword || !bcrypt.compareSync(req.body.currentPassword, user.password)) {
+          return res.status(401).send({ message: 'كلمة المرور الحالية غير صحيحة' });
+        }
+      }
+      if (emailChanged) {
+        const taken = await User.findOne({ email: newEmail, _id: { $ne: user._id } });
+        if (taken) return res.status(400).send({ message: 'البريد الإلكتروني مستخدم بالفعل' });
+        user.email = newEmail;
+      }
       user.name = req.body.name || user.name;
-      user.email = req.body.email || user.email;
       if (req.body.phone !== undefined) user.phone = req.body.phone;
       if (req.body.businessName !== undefined) user.businessName = req.body.businessName;
       // 🏭 العميل العادي يقدر يطلب تفعيل حساب تاجر (والأدمن هو اللي يوافق)
